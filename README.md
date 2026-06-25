@@ -22,7 +22,3 @@ You can fine-tune the strictness of the plugin within the standard RuneLite Conf
 1. **First Click (Intercepted):** If your offer breaches both the percentage and total GP thresholds, the first click on "Confirm" is consumed and blocked. The visual banner changes from a **Red Warning** to an **Orange Action Notice**.
 2. **Second Click (Passed Through):** Clicking "Confirm" again while the item layout remains unchanged passes the transaction cleanly through to the game server.
 3. **Auto-Reset:** Changing the price, quantity, or switching items automatically resets the security gate to prevent accidental double-clicks from bleeding over into your next trade.
-
-## License
-
-This project is licensed under the BSD 2-Clause License.
