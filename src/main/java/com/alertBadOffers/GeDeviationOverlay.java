@@ -19,17 +19,18 @@ public class GeDeviationOverlay extends Overlay
 {
     private final Client client;
     private final AlertBadOffersConfig config;
+    private final WikiPriceService wikiPriceService;
 
-    // Static state tracker decouples the overlay from FlippingPlugin entirely
     public static int lastAttemptedOfferHash = 0;
 
     @Inject
-    public GeDeviationOverlay(Client client, AlertBadOffersConfig config)
+    public GeDeviationOverlay(Client client, AlertBadOffersConfig config, WikiPriceService wikiPriceService)
     {
         setPosition(OverlayPosition.DYNAMIC);
         setLayer(OverlayLayer.ABOVE_WIDGETS);
         this.client = client;
         this.config = config;
+        this.wikiPriceService = wikiPriceService;
     }
 
     @Override
@@ -37,7 +38,6 @@ public class GeDeviationOverlay extends Overlay
     {
         Widget headerWidget = client.getWidget(465, 2);
         if (headerWidget == null || headerWidget.isHidden()) return null;
-
 
         Widget[] headerChildren = headerWidget.getChildren();
         if (headerChildren == null || headerChildren.length < 2 || headerChildren[1] == null) return null;
@@ -47,18 +47,33 @@ public class GeDeviationOverlay extends Overlay
             return null;
         }
 
-        Widget itemWidget = client.getWidget(465, 21);
-        int itemId = itemWidget != null ? itemWidget.getItemId() : 0;
-
         Widget guidePriceWidget = client.getWidget(465, 28);
         if (guidePriceWidget == null || guidePriceWidget.isHidden()) return null;
-        
-        long guidePrice = parseLongSafely(guidePriceWidget.getText());
+
+
         Widget parentWidget = client.getWidget(465, 26);
-        if (parentWidget == null || parentWidget.isHidden() || guidePrice <= 0) return null;
+        if (parentWidget == null || parentWidget.isHidden()) return null;
 
         Widget[] structuralChildren = parentWidget.getChildren();
-        if (structuralChildren == null || structuralChildren.length <= 41 || structuralChildren[41] == null) return null;
+        if (structuralChildren == null || structuralChildren.length <= 41 || structuralChildren[41] == null || structuralChildren[23] == null) return null;
+
+        int itemId = structuralChildren[23].getItemId();
+        if (itemId <= 0) return null;
+
+        // DETERMINE TARGET BASE PRICE
+        long targetBasePrice = 0;
+        if (config.useRealTimePrices())
+        {
+            targetBasePrice = wikiPriceService.getPrice(itemId);
+        }
+
+        // Fall back to normal GE price if config toggle is off OR if Wiki API hasn't resolved yet
+        if (targetBasePrice <= 0)
+        {
+            targetBasePrice = parseLongSafely(guidePriceWidget.getText());
+        }
+
+        if (targetBasePrice <= 0) return null;
 
         long offerPrice = parseLongSafely(structuralChildren[41].getText());
         String quantityText = structuralChildren[34] != null ? structuralChildren[34].getText() : "1";
@@ -66,58 +81,91 @@ public class GeDeviationOverlay extends Overlay
         if (quantity <= 0) quantity = 1;
         if (offerPrice <= 0) return null;
 
-        long gpDifference = Math.abs(offerPrice - guidePrice);
-        double deviation = ((double) gpDifference / guidePrice) * 100;
+        long gpDifference = Math.abs(offerPrice - targetBasePrice);
+        double deviation = ((double) gpDifference / targetBasePrice) * 100;
+        long totalGpDifference = gpDifference * quantity;
 
-        int currentOfferHash = java.util.Objects.hash(itemId, guidePrice, offerPrice, quantityText);
+        int currentOfferHash = java.util.Objects.hash(itemId, targetBasePrice, offerPrice, quantityText);
         if (currentOfferHash != lastAttemptedOfferHash)
         {
             lastAttemptedOfferHash = 0;
         }
 
-        if (deviation > config.customGeDeviationThreshold() && gpDifference*quantity >= config.minGeDeviationGpThreshold())
+        // EVALUATE NEW SLIDER BOUNDS
+        boolean isPercentageViolation = deviation > config.customGeDeviationThreshold() && totalGpDifference >= config.minGeDeviationGpThreshold();
+        boolean isMaxGpViolation = totalGpDifference >= config.maxGeDeviationGpThreshold();
+
+        if (isPercentageViolation || isMaxGpViolation)
         {
             boolean isFirstClickBlocked = (currentOfferHash == lastAttemptedOfferHash);
 
-            // Configure sleek text and color themes
-            String warningText = (isFirstClickBlocked)
-                ? String.format("⚠️ Confirm again to force submit (Deviates %.1f%%)", deviation)
-                : String.format("⚠️ Warning: Price deviates by %.1f%%!", deviation);
-            
+            // 1. Prepare lines dynamically
+            String line1 = "";
+            String line2;
+
+            if (config.useRealTimePrices())
+            {
+                line1 = String.format("1-Hour Average Mid price is: %,d GP", targetBasePrice);
+            }
+
+            if (isFirstClickBlocked)
+            {
+                line2 = isMaxGpViolation && !isPercentageViolation
+                        ? String.format("⚠️ Confirm again to force submit (Deviates +%,d GP)", totalGpDifference)
+                        : String.format("⚠️ Confirm again to force submit (Deviates %.1f%%)", deviation);
+            }
+            else
+            {
+                line2 = isMaxGpViolation && !isPercentageViolation
+                        ? String.format("⚠️ Warning: Loss exceeds Max Limit (+%,d GP)!", totalGpDifference)
+                        : String.format("⚠️ Warning: Price deviates by %.1f%%!", deviation);
+            }
+
             Color accentColor = (isFirstClickBlocked) ? new Color(255, 152, 0) : new Color(239, 83, 80);
 
-            // Set up clean typography rendering
             graphics.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_GASP);
             Font originalFont = graphics.getFont();
             Font warningFont = new Font("Dialog", Font.BOLD, 12);
             graphics.setFont(warningFont);
 
             FontMetrics metrics = graphics.getFontMetrics(warningFont);
-            int textWidth = metrics.stringWidth(warningText);
-            int textHeight = metrics.getHeight();
 
-            // Structure a beautiful, clean UI banner panel directly above the confirmation interface zone
+            // 2. Calculate dimension metrics considering both lines
+            boolean hasTwoLines = !line1.isEmpty();
+            int textWidth = Math.max(metrics.stringWidth(line2), hasTwoLines ? metrics.stringWidth(line1) : 0);
+            int lineHeight = metrics.getHeight();
+            int textHeight = hasTwoLines ? (lineHeight * 2) + 2 : lineHeight; // Added 2px line spacing padding
+
             int paddingX = 14;
             int paddingY = 8;
             int boxWidth = textWidth + (paddingX * 2);
             int boxHeight = textHeight + (paddingY * 2);
-            
-            int x = parentWidget.getCanvasLocation().getX() + (parentWidget.getWidth() / 2) - (boxWidth / 2);
-            int y = parentWidget.getCanvasLocation().getY() + parentWidget.getHeight() - 74;
 
-            // Draw sleek dark background drop-shadow container plate
+            int x = parentWidget.getCanvasLocation().getX() + (parentWidget.getWidth() / 2) - (boxWidth / 2);
+            // Move the box up slightly more if it has two lines to prevent overlap with buttons
+            int y = parentWidget.getCanvasLocation().getY() + parentWidget.getHeight() - (hasTwoLines ? 90 : 74);
+
             graphics.setColor(new Color(25, 25, 25, 230));
             graphics.fillRect(x, y, boxWidth, boxHeight);
 
-            // Draw thin framing boundary accent line
             graphics.setColor(new Color(accentColor.getRed(), accentColor.getGreen(), accentColor.getBlue(), 160));
             graphics.drawRect(x, y, boxWidth, boxHeight);
 
-            // Print the dynamic string notification context cleanly inside the box boundaries
             graphics.setColor(accentColor);
-            graphics.drawString(warningText, x + paddingX, y + paddingY + metrics.getAscent());
+            int currentY = y + paddingY + metrics.getAscent();
 
-            // Reset graphics configuration states back safely
+            if (hasTwoLines)
+            {
+                int line1X = x + (boxWidth / 2) - (metrics.stringWidth(line1) / 2);
+                graphics.setColor(Color.GRAY);
+                graphics.drawString(line1, line1X, currentY);
+                currentY += lineHeight + 2; // Advance cursor to next line space
+            }
+
+            int line2X = x + (boxWidth / 2) - (metrics.stringWidth(line2) / 2);
+            graphics.setColor(accentColor);
+            graphics.drawString(line2, line2X, currentY);
+
             graphics.setFont(originalFont);
         }
 

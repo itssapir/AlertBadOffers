@@ -27,4 +27,26 @@ public interface AlertBadOffersConfig extends Config
 	{
 		return 100000; // Default to 100,000 gp (100k) minimum difference
 	}
+
+	@ConfigItem(
+			keyName = "maxGeDeviationGpThreshold",
+			name = "Maximum GP Deviation",
+			description = "The absolute maximum GP difference allowed. Any offer exceeding this flat cash difference will be flagged instantly, regardless of percentages.",
+			position = 3
+	)
+	default int maxGeDeviationGpThreshold()
+	{
+		return 10000000; // Default to 10M GP limit
+	}
+
+	@ConfigItem(
+			keyName = "useRealTimePrices",
+			name = "Use Real-Time 1-Hour Average",
+			description = "Use the live OSRS Wiki 1-hour average prices for calculations instead of the in-game GE guide price.",
+			position = 4
+	)
+	default boolean useRealTimePrices()
+	{
+		return false;
+	}
 }
