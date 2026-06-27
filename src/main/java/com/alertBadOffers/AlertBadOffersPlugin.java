@@ -14,7 +14,7 @@ import net.runelite.client.ui.overlay.OverlayManager;
 
 @Slf4j
 @PluginDescriptor(
-	name = "AlertBadOffers"
+	name = "Alert Bad Offers"
 )
 public class AlertBadOffersPlugin extends Plugin
 {
